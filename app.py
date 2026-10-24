@@ -29,8 +29,20 @@ header[data-testid="stHeader"] {height: 0 !important; background: transparent !i
 section[data-testid="stSidebar"] {display: none !important;}
 [data-testid="collapsedControl"] {display: none !important;}
 
-.welcome {text-align: center; margin: 1rem 0 1.45rem;}
-.welcome h1 {margin: 0; color: #29273a; font-size: clamp(1.55rem, 3vw, 2.1rem); line-height: 1.2; letter-spacing: 0;}
+.top-header {text-align: center; margin: 0.2rem 0 1.5rem;}
+.brand-row {
+    min-height: 42px; display: inline-flex; align-items: center; justify-content: center; gap: 0.65rem;
+    color: #29273a; font-size: 1rem; font-weight: 750;
+}
+.brand-icon {
+    width: 38px; height: 38px; border-radius: 12px; display: inline-grid; place-items: center;
+    background: linear-gradient(135deg, #7268a6, #a68bbf); color: #ffffff; font-size: 1.25rem;
+    box-shadow: 0 8px 22px rgba(114, 104, 166, 0.18);
+}
+.brand-title {display: inline-flex; align-items: center; gap: 0.48rem;}
+.brand-dot {width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #9ee2b7; box-shadow: 0 0 0 3px rgba(158, 226, 183, 0.18);}
+.top-header h1 {margin: 0.55rem 0 0; color: #29273a; font-size: clamp(1.55rem, 3vw, 2.1rem); line-height: 1.2; letter-spacing: 0; font-weight: 800;}
+.top-header p {margin: 0.65rem 0 0; color: #85819a; font-size: 0.92rem;}
 
 [data-testid="stChatMessage"] {border: none !important; background: transparent !important; max-width: 82%; width: fit-content;}
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]),
@@ -90,10 +102,15 @@ llm = create_llm()
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-# 顶部居中标题
+# 顶部居中品牌与标题区域（始终位于聊天记录上方）
 st.markdown("""
-<div class="welcome">
+<div class="top-header">
+    <div class="brand-row">
+        <span class="brand-icon">🎓</span>
+        <span class="brand-title">SYSU Campus AI <span class="brand-dot"></span></span>
+    </div>
     <h1>有什么校园问题，我来帮你查</h1>
+    <p>教务、学籍、宿舍、奖助与办事流程，直接问我。</p>
 </div>
 """, unsafe_allow_html=True)
 
