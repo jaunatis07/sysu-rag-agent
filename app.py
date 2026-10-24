@@ -24,7 +24,15 @@ header[data-testid="stHeader"] {height: 0 !important; background: transparent !i
         linear-gradient(135deg, #f7f8fc 0%, #f3f4fa 52%, #fbf7fa 100%);
     font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
 }
-.block-container {max-width: 980px; padding-top: 0.7rem; padding-bottom: 6rem;}
+.block-container {
+    width: 100%;
+    max-width: 800px;
+    margin: 0 auto;
+    padding-top: 10vh;
+    padding-bottom: 6rem;
+    padding-left: 0;
+    padding-right: 0;
+}
 
 section[data-testid="stSidebar"] {display: none !important;}
 [data-testid="collapsedControl"] {display: none !important;}
@@ -80,7 +88,7 @@ section[data-testid="stSidebar"] {display: none !important;}
 hr {border-color: rgba(112, 105, 145, 0.08);}
 
 @media (max-width: 700px) {
-    .block-container {padding-left: 0.7rem; padding-right: 0.7rem;}
+    .block-container {padding-top: 6vh; padding-left: 0.7rem; padding-right: 0.7rem;}
     [data-testid="stChatMessage"] {max-width: 92%;}
     .bottom-composer button[kind="secondary"] {width: 44px !important; height: 44px; min-height: 44px;}
 }
@@ -119,7 +127,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 st.markdown('<div class="bottom-composer">', unsafe_allow_html=True)
-clear_col, input_col = st.columns([0.06, 0.94], gap="small", vertical_alignment="bottom")
+clear_col, input_col = st.columns([0.07, 0.93], gap="small", vertical_alignment="bottom")
 with clear_col:
     if st.button("🗑️", key="clear_chat", help="清空对话", type="secondary"):
         st.session_state.messages = []
