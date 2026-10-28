@@ -63,6 +63,11 @@ section[data-testid="stSidebar"] {display: none !important;}
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {margin-left: auto;}
 [data-testid="stChatMessage"] > div:last-child {padding: 0 !important;}
 [data-testid="stChatMessageContent"] {padding: 0.85rem 1rem; border-radius: 20px;}
+[data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarAssistant"]) [data-testid="stChatMessageContent"],
+[data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) [data-testid="stChatMessageContent"] {
+    padding-left: 1.5rem;
+    padding-right: 1.5rem;
+}
 [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
     background: linear-gradient(135deg, rgba(230, 224, 246, 0.96), rgba(242, 232, 245, 0.96));
     border-bottom-right-radius: 7px; color: #45415a;
@@ -110,6 +115,35 @@ with st.spinner("正在加载校园政策知识库与办事工具箱..."):
     bm25_retriever = load_rag_components()
 
 llm = create_llm()
+
+
+def render_policy_answer(response: str) -> None:
+    conclusion_marker = "【结论】"
+    evidence_marker = "【依据】"
+    next_marker = "【下一步】"
+
+    if not all(marker in response for marker in (conclusion_marker, evidence_marker, next_marker)):
+        st.markdown(response)
+        return
+
+    conclusion_start = response.find(conclusion_marker)
+    evidence_start = response.find(evidence_marker, conclusion_start)
+    next_start = response.find(next_marker, evidence_start)
+    if not (conclusion_start < evidence_start < next_start):
+        st.markdown(response)
+        return
+
+    conclusion = " ".join(response[conclusion_start + len(conclusion_marker):evidence_start].split())
+    evidence = "\n".join(line.strip() for line in response[evidence_start + len(evidence_marker):next_start].splitlines() if line.strip())
+    next_steps = "\n".join(line.strip() for line in response[next_start + len(next_marker):].splitlines() if line.strip())
+
+    if conclusion:
+        st.markdown(f"**【结论】**\n\n{conclusion}")
+    if evidence:
+        st.markdown(f"**【依据】**\n\n{evidence}")
+    if next_steps:
+        st.markdown(f"**【下一步】**\n\n{next_steps}")
+
 
 # ==================== 5. 主界面 ====================
 
@@ -166,15 +200,16 @@ if query:
                 chat_history_text,
             )
 
-            st.markdown(response)
+            render_policy_answer(response)
 
-            with st.expander("📌 点击查看底层 RAG 检索与办事 Tool 调用详情"):
-                if tool_output:
-                    st.markdown(f"**调用的办事工具输出**: `{tool_output}`")
-                for i, doc in enumerate(source_docs):
-                    source_name = doc.metadata.get("source", "未知文件")
-                    st.markdown(f"**来源文档 {i+1}**: `{source_name}`")
-                    st.text(doc.page_content[:300] + "...")
-                    st.divider()
+            # 开发调试用；普通用户页面不展示检索详情。
+            # with st.expander("📌 点击查看底层 RAG 检索与办事 Tool 调用详情"):
+            #     if tool_output:
+            #         st.markdown(f"**调用的办事工具输出**: `{tool_output}`")
+            #     for i, doc in enumerate(source_docs):
+            #         source_name = doc.metadata.get("source", "未知文件")
+            #         st.markdown(f"**来源文档 {i+1}**: `{source_name}`")
+            #         st.text(doc.page_content[:300] + "...")
+            #         st.divider()
 
     st.session_state.messages.append({"role": "assistant", "content": response})
