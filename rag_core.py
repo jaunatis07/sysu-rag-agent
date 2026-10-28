@@ -1,3 +1,4 @@
+import json
 import os
 import re
 from pathlib import Path
@@ -8,6 +9,7 @@ PERSIST_DIRECTORY = BASE_DIR / "chroma_db"
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -53,6 +55,25 @@ def get_document_download_link(form_name: str) -> str:
 
 
 TOOLS = [query_campus_contact, get_document_download_link]
+TOOL_MAP = {tool.name: tool for tool in TOOLS}
+
+REFUSAL_OUT_OF_SCOPE = """
+不好意思，我的知识库仅限中大校内规章与办事文件，这个问题超出了我的服务范围。
+"""
+REFUSAL_NEED_MORE_INFO = """
+为了给您最准确的指引，我还需要了解一些关键信息。请问您具体要申请什么事项（如奖助、学籍、场地等）？另外请告知您所在的年级和院系，我好为您匹配对应的文件。
+"""
+
+SYSTEM_PROMPT = """你是一个中山大学校园政策咨询与办事 Agent。你可以通过查阅官方政策文档，或者调用本地办事实用工具来服务学生。
+
+【回答规则】
+1. 只能使用参考资料中的事实回答，不得补充资料未提及的流程、条件、数字或背景。
+2. 先直接回答用户所问内容，只保留必要信息；通常控制在1至3句话，不重复、不延伸讨论无关事项。
+3. 每项政策事实都要注明对应的来源文件名；不同文件的规定要分别说明，不能混为一谈。
+4. 如果召回内容不足以回答，明确说明“现有资料未说明”，不要猜测。
+5. 咨询地点、电话或表格时，按办事工具结果回答，不得自行编造或扩展。
+6. 使用专业、清晰、口语友好的表达。
+"""
 
 PROMPT = ChatPromptTemplate.from_template(
     """你是一个中山大学校园政策咨询与办事 Agent。你可以通过查阅官方政策文档，或者调用本地办事实用工具来服务学生。
@@ -86,6 +107,52 @@ def create_llm() -> ChatOpenAI | None:
         base_url="https://api.deepseek.com/v1",
         temperature=0.1,
     ).bind_tools(TOOLS)
+
+
+def route_intent(query: str, llm: ChatOpenAI | None) -> dict[str, str | float]:
+    if llm is None:
+        return {"intent": "unknown", "confidence": 1.0, "reason": "意图识别模型不可用"}
+
+    routing_prompt = """你是中山大学校园问答系统的意图识别器。请只输出一个 JSON 对象，不要输出 Markdown 或解释。
+
+用户问题：{query}
+
+意图类别：
+- policy_qa：查询中大校内规章、政策条件、流程或结论
+- contact：咨询部门、地点、办公时间或电话
+- download：索要表格、申请表或下载链接
+- out_of_scope：与中大校内规章、办事文件无关的问题
+- unknown：无法可靠判断意图
+
+输出格式：{{"intent":"类别","confidence":0到1之间的小数,"reason":"简短理由"}}
+"""
+
+    try:
+        response = llm.invoke([HumanMessage(content=routing_prompt.format(query=query))])
+        content = response.content
+        if not isinstance(content, str):
+            content = str(content)
+        parsed = json.loads(content)
+        if not isinstance(parsed, dict):
+            raise ValueError("意图识别结果不是对象")
+
+        intent = parsed.get("intent")
+        valid_intents = {"policy_qa", "contact", "download", "out_of_scope", "unknown"}
+        if intent not in valid_intents:
+            raise ValueError("意图类别无效")
+
+        confidence = float(parsed["confidence"])
+        confidence = max(0.0, min(1.0, confidence))
+        reason = parsed.get("reason", "")
+        if not isinstance(reason, str):
+            reason = str(reason)
+        return {"intent": intent, "confidence": confidence, "reason": reason}
+    except json.JSONDecodeError:
+        return {"intent": "unknown", "confidence": 0.0, "reason": "意图识别结果不是合法 JSON"}
+    except (KeyError, TypeError, ValueError):
+        return {"intent": "unknown", "confidence": 0.0, "reason": "意图识别结果格式无效"}
+    except Exception:
+        return {"intent": "unknown", "confidence": 1.0, "reason": "意图识别调用失败，降级为正常检索生成"}
 
 
 def tokenize_chinese_text(text: str) -> list[str]:
@@ -142,47 +209,126 @@ def format_local_fallback(source_docs: list[Document], tool_output: str) -> str:
     return "\n\n".join(sections)
 
 
+def answer_with_tools(
+    query: str,
+    bm25_retriever: BM25Retriever,
+    llm: ChatOpenAI | None,
+    chat_history_text: str = "",
+) -> tuple[str, list[Document], str]:
+    intent_route = route_intent(query, llm)
+    if intent_route["intent"] == "out_of_scope":
+        return (REFUSAL_OUT_OF_SCOPE, [], "")
+    if intent_route["intent"] == "unknown" and intent_route["confidence"] < 0.5:
+        return (REFUSAL_NEED_MORE_INFO, [], "")
+
+    source_docs = retrieve_policy_documents(query, bm25_retriever)
+    context_sections = [
+        f"【来源文件：{Path(str(document.metadata.get('source', '未知文件'))).name}】\n"
+        f"{document.page_content}"
+        for document in source_docs
+    ]
+    context = "\n\n".join(context_sections)
+
+    if llm is None:
+        return format_local_fallback(source_docs, ""), source_docs, ""
+
+    messages = [
+        SystemMessage(content=SYSTEM_PROMPT),
+        HumanMessage(
+            content=(
+                f"[参考资料]\n{context}\n\n"
+                f"[前文对话历史]\n{chat_history_text or '无历史对话'}\n\n"
+                f"[用户问题]\n{query}"
+            )
+        ),
+    ]
+    tool_output = ""
+
+    try:
+        response = llm.invoke(messages)
+        messages.append(response)
+        for _ in range(2):
+            tool_calls = getattr(response, "tool_calls", None) or []
+            if not tool_calls:
+                break
+
+            round_outputs = []
+            for call in tool_calls:
+                try:
+                    selected_tool = TOOL_MAP[call["name"]]
+                    result = selected_tool.invoke(call["args"])
+                    output = str(result)
+                except Exception as exc:
+                    output = f"工具调用失败：{exc}"
+
+                round_outputs.append(output)
+                tool_output = "\n\n" + "\n\n".join(round_outputs)
+                messages.append(
+                    ToolMessage(content=output, tool_call_id=call["id"])
+                )
+
+            response = llm.invoke(messages)
+            messages.append(response)
+    except Exception:
+        return format_local_fallback(source_docs, tool_output), source_docs, tool_output
+
+    content = response.content
+    if not isinstance(content, str):
+        content = str(content)
+    return content, source_docs, tool_output
+
+
 def answer_question(
     query: str,
     bm25_retriever: BM25Retriever,
     llm: ChatOpenAI | None,
     chat_history: str = "无历史对话",
 ) -> tuple[str, list[Document], str]:
-    tool_output = ""
-    if any(term in query for term in ("电话", "地点", "教务部", "学生处", "校医院")):
-        department = (
-            "教务部" if "教务" in query else
-            "学生处" if "学生处" in query else
-            "校医院" if "医院" in query else "教务部"
-        )
-        tool_output = "\n\n" + query_campus_contact.invoke({"department_name": department})
-    elif any(term in query for term in ("表", "下载", "免修", "休学表")):
-        form_name = "免修" if "免修" in query else "休学" if "休学" in query else "选课"
-        tool_output = "\n\n" + get_document_download_link.invoke({"form_name": form_name})
+    return answer_with_tools(query, bm25_retriever, llm, chat_history)
 
-    source_docs = retrieve_policy_documents(query, bm25_retriever)
-    if llm is None:
-        return format_local_fallback(source_docs, tool_output), source_docs, tool_output
 
-    context_sections = [
-        f"【来源文件：{Path(str(document.metadata.get('source', '未知文件'))).name}】\n"
-        f"{document.page_content}"
-        for document in source_docs
-    ]
-    if tool_output:
-        context_sections.append(tool_output.strip())
-    context = "\n\n".join(context_sections)
-    try:
-        response = llm.invoke(
-            PROMPT.format(
-                chat_history=chat_history,
-                context=context,
-                question=query,
-            )
-        ).content
-    except Exception:
-        return format_local_fallback(source_docs, tool_output), source_docs, tool_output
-
-    if not isinstance(response, str):
-        response = str(response)
-    return response, source_docs, tool_output
+# answer_question_v1_backup（原函数完整备份，不再运行）
+# def answer_question_v1_backup(
+#     query: str,
+#     bm25_retriever: BM25Retriever,
+#     llm: ChatOpenAI | None,
+#     chat_history: str = "无历史对话",
+# ) -> tuple[str, list[Document], str]:
+#     tool_output = ""
+#     if any(term in query for term in ("电话", "地点", "教务部", "学生处", "校医院")):
+#         department = (
+#             "教务部" if "教务" in query else
+#             "学生处" if "学生处" in query else
+#             "校医院" if "医院" in query else "教务部"
+#         )
+#         tool_output = "\n\n" + query_campus_contact.invoke({"department_name": department})
+#     elif any(term in query for term in ("表", "下载", "免修", "休学表")):
+#         form_name = "免修" if "免修" in query else "休学" if "休学" in query else "选课"
+#         tool_output = "\n\n" + get_document_download_link.invoke({"form_name": form_name})
+#
+#     source_docs = retrieve_policy_documents(query, bm25_retriever)
+#     if llm is None:
+#         return format_local_fallback(source_docs, tool_output), source_docs, tool_output
+#
+#     context_sections = [
+#         f"【来源文件：{Path(str(document.metadata.get('source', '未知文件'))).name}】\n"
+#         f"{document.page_content}"
+#         for document in source_docs
+#     ]
+#     if tool_output:
+#         context_sections.append(tool_output.strip())
+#     context = "\n\n".join(context_sections)
+#     try:
+#         response = llm.invoke(
+#             PROMPT.format(
+#                 chat_history=chat_history,
+#                 context=context,
+#                 question=query,
+#             )
+#         ).content
+#     except Exception:
+#         return format_local_fallback(source_docs, tool_output), source_docs, tool_output
+#
+#     if not isinstance(response, str):
+#         response = str(response)
+#     return response, source_docs, tool_output
