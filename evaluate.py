@@ -11,8 +11,8 @@ from rag_core import answer_question, create_llm, initialize_rag_components
 
 
 BASE_DIR = Path(__file__).resolve().parent
-DATASET_PATH = BASE_DIR / "eval_dataset.json"
-RESULTS_PATH = BASE_DIR / "eval_results.json"
+DATASET_PATH = BASE_DIR / "eval_dataset_v2.json"
+RESULTS_PATH = BASE_DIR / "eval_results_v2.json"
 PASS_THRESHOLD = 0.8
 
 JUDGE_PROMPT = ChatPromptTemplate.from_messages(
@@ -43,7 +43,7 @@ def load_dataset() -> list[dict[str, Any]]:
 
     dataset = json.loads(DATASET_PATH.read_text(encoding="utf-8"))
     if not isinstance(dataset, list) or not dataset:
-        raise ValueError("eval_dataset.json 必须是非空 JSON 数组。")
+        raise ValueError("eval_dataset_v2.json 必须是非空 JSON 数组。")
     required_fields = ("question", "ground_truth")
     for index, item in enumerate(dataset, start=1):
         if not isinstance(item, dict) or any(
@@ -121,6 +121,13 @@ def main() -> None:
         )
         print(f"[{index}/{len(dataset)}] {verdict}: {question}")
 
+    core_results = results[:50]
+    tail_results = results[50:130]
+    core_passed = sum(result["verdict"] == "PASS" for result in core_results)
+    tail_passed = sum(result["verdict"] == "PASS" for result in tail_results)
+    core_accuracy = core_passed / len(core_results) if core_results else 0
+    tail_accuracy = tail_passed / len(tail_results) if tail_results else 0
+
     accuracy = passed / len(dataset)
     report = {
         "total": len(dataset),
@@ -137,6 +144,8 @@ def main() -> None:
     )
 
     print(f"\n准确率：{passed}/{len(dataset)} = {accuracy:.1%}")
+    print(f"前 50 条（原有核心文件）准确率：{core_passed}/{len(core_results)} = {core_accuracy:.1%}")
+    print(f"后 80 条（新补充长尾文件）准确率：{tail_passed}/{len(tail_results)} = {tail_accuracy:.1%}")
     print(f"达标线：{PASS_THRESHOLD:.0%}，{'达标' if accuracy >= PASS_THRESHOLD else '未达标'}")
     print(f"详细结果：{RESULTS_PATH}")
 
