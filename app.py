@@ -1,5 +1,11 @@
+from pathlib import Path
+
 import streamlit as st
+from dotenv import load_dotenv
+
 from rag_core import answer_question, create_llm, initialize_rag_components
+
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 # 1. 页面基本配置
 st.set_page_config(

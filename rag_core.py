@@ -3,8 +3,11 @@ import os
 import re
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BASE_DIR = Path(__file__).resolve().parent
 PERSIST_DIRECTORY = BASE_DIR / "chroma_db"
+load_dotenv(BASE_DIR / ".env")
 
 from langchain_chroma import Chroma
 from langchain_community.retrievers import BM25Retriever
