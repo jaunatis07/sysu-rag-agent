@@ -20,12 +20,24 @@ else:
     docs = loader.load()
     print(f"成功加载了 {len(docs)} 页原始 PDF 内容。")
 
+    for doc in docs:
+        source_path = doc.metadata.get("source")
+        if not isinstance(source_path, str) or not source_path:
+            raise ValueError("PDF 页面缺少有效的 source 元数据，无法提取文件名。")
+        doc.metadata["file_name"] = os.path.basename(source_path)
+
     # 3. 文本分块（Chunking）- 针对规章制度优化
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,     # 每个 chunk 大约 500 个字符
         chunk_overlap=100   # 相邻 chunk 重叠 100 字符，保证上下文连贯
     )
     splits = text_splitter.split_documents(docs)
+    for split in splits:
+        file_name = split.metadata["file_name"]
+        split.page_content = (
+            f"【文件说明：本片段来源于《{file_name}》】\n"
+            f"{split.page_content}"
+        )
     print(f"文本切分完成，共生成了 {len(splits)} 个文本块（Chunks）。")
 
     # 4. 初始化中文 Embedding 模型（用于将文字转为向量）
