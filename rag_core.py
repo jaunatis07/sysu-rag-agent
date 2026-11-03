@@ -82,6 +82,7 @@ SYSTEM_PROMPT = """你是一个中山大学校园政策咨询与办事 Agent。�
 4. 如果召回内容不足以回答，明确说明“现有资料未说明”，不要猜测。
 5. 咨询地点、电话或表格时，按办事工具结果回答，不得自行编造或扩展。
 6. 使用专业、清晰、口语友好的表达。
+7. 如果不同文件对同一事项规定不一致，请如实列出双方的条款，并建议用户以最新发布的文件为准。
 
 输出必须严格遵循以下三段结构，不得增删段落标题，不得写成连续段落：
 【结论】一到两句话直接回答。文件未明确规定时，写「文件未明确规定」，再给最接近的相关条款。
@@ -140,6 +141,7 @@ def route_intent(query: str, llm: ChatOpenAI | None) -> dict[str, str | float]:
 - out_of_scope：与中大校内规章、办事文件无关的问题
 - unknown：无法可靠判断意图
 
+只要用户问题包含“督导”“听课”“自习室”或“课室”，就属于中大校园相关场景，绝不能判为 out_of_scope；不确定时选择 policy_qa 或 unknown。
 输出格式：{{"intent":"类别","confidence":0到1之间的小数,"reason":"简短理由"}}
 """
 
@@ -162,6 +164,14 @@ def route_intent(query: str, llm: ChatOpenAI | None) -> dict[str, str | float]:
         reason = parsed.get("reason", "")
         if not isinstance(reason, str):
             reason = str(reason)
+        if intent == "out_of_scope" and any(
+            keyword in query for keyword in ("督导", "听课", "自习室", "课室")
+        ):
+            return {
+                "intent": "policy_qa",
+                "confidence": confidence,
+                "reason": "问题包含中大校园相关场景关键词，转为校内政策咨询",
+            }
         return {"intent": intent, "confidence": confidence, "reason": reason}
     except json.JSONDecodeError:
         return {"intent": "unknown", "confidence": 0.0, "reason": "意图识别结果不是合法 JSON"}
