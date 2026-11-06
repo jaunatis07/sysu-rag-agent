@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -145,6 +146,48 @@ def render_policy_answer(response: str) -> None:
         st.markdown(f"**【下一步】**\n\n{next_steps}")
 
 
+def tool_result_has_match(tool_output: str) -> bool:
+    return any(
+        marker in tool_output
+        for marker in ("【官方部门名片】", "【官方表格下载】")
+    )
+
+
+def render_tool_results(tool_output: str) -> None:
+    if not tool_output.strip():
+        return
+
+    result_blocks = [
+        block.strip()
+        for block in re.split(r"(?=【(?:官方部门名片|官方表格下载|提示)】)", tool_output)
+        if block.strip()
+    ]
+    if not result_blocks:
+        result_blocks = [tool_output.strip()]
+
+    for result in result_blocks:
+        with st.container(border=True):
+            st.markdown(result)
+
+
+def render_rag_sources(source_docs: list[dict[str, str]], tool_output: str) -> None:
+    if not source_docs or tool_result_has_match(tool_output):
+        return
+
+    with st.expander("📌 点击查看 RAG 检索详情"):
+        for index, document in enumerate(source_docs, start=1):
+            st.markdown(f"**来源文档 {index}**: `{document['source']}`")
+            st.text(document["content"][:300] + "...")
+            st.divider()
+
+
+def render_assistant_message(message: dict) -> None:
+    render_policy_answer(message["content"])
+    tool_output = message.get("tool_output", "")
+    render_tool_results(tool_output)
+    render_rag_sources(message.get("source_docs", []), tool_output)
+
+
 # ==================== 5. 主界面 ====================
 
 if "messages" not in st.session_state:
@@ -164,7 +207,10 @@ st.markdown("""
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        if message["role"] == "assistant":
+            render_assistant_message(message)
+        else:
+            st.markdown(message["content"])
 
 st.markdown('<div class="bottom-composer">', unsafe_allow_html=True)
 clear_col, input_col = st.columns([0.07, 0.93], gap="small", vertical_alignment="bottom")
@@ -200,16 +246,19 @@ if query:
                 chat_history_text,
             )
 
-            render_policy_answer(response)
+            saved_source_docs = [
+                {
+                    "source": str(doc.metadata.get("source", "未知文件")),
+                    "content": doc.page_content,
+                }
+                for doc in source_docs
+            ]
+            assistant_message = {
+                "role": "assistant",
+                "content": response,
+                "tool_output": tool_output,
+                "source_docs": saved_source_docs,
+            }
+            render_assistant_message(assistant_message)
 
-            # 开发调试用；普通用户页面不展示检索详情。
-            # with st.expander("📌 点击查看底层 RAG 检索与办事 Tool 调用详情"):
-            #     if tool_output:
-            #         st.markdown(f"**调用的办事工具输出**: `{tool_output}`")
-            #     for i, doc in enumerate(source_docs):
-            #         source_name = doc.metadata.get("source", "未知文件")
-            #         st.markdown(f"**来源文档 {i+1}**: `{source_name}`")
-            #         st.text(doc.page_content[:300] + "...")
-            #         st.divider()
-
-    st.session_state.messages.append({"role": "assistant", "content": response})
+    st.session_state.messages.append(assistant_message)
