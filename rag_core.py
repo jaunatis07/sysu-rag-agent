@@ -268,6 +268,48 @@ def format_local_fallback(source_docs: list[Document], tool_output: str) -> str:
     return "\n\n".join(sections)
 
 
+def tool_result_next_step(tool_output: str) -> str | None:
+    if not tool_output.strip():
+        return None
+
+    next_step_match = re.search(
+        r"\*\*(?:下一步|操作指引)\*\*[：:]\s*([^\n]+)",
+        tool_output,
+    )
+    if next_step_match:
+        return next_step_match.group(1).strip()
+
+    suggestion_match = re.search(
+        r"(?:建议|请)(?:通过|前往|联系|咨询)[^\n。]*(?:。|$)",
+        tool_output,
+    )
+    if suggestion_match:
+        return suggestion_match.group(0).strip()
+
+    department_match = re.search(
+        r"\*\*部门名称\*\*[：:]\s*([^\n]+)",
+        tool_output,
+    )
+    if department_match:
+        department = department_match.group(1).strip()
+        return f"建议咨询{department}确认"
+
+    return None
+
+
+def apply_tool_result_next_step(response: str, tool_output: str) -> str:
+    next_step = tool_result_next_step(tool_output)
+    if next_step is None:
+        return response
+
+    marker = "【下一步】"
+    marker_start = response.find(marker)
+    if marker_start == -1:
+        return f"{response.rstrip()}\n\n{marker}\n{next_step}"
+
+    return f"{response[:marker_start + len(marker)].rstrip()}\n{next_step}"
+
+
 def answer_with_tools(
     query: str,
     bm25_retriever: BM25Retriever,
@@ -302,6 +344,7 @@ def answer_with_tools(
         ),
     ]
     tool_output = ""
+    tool_outputs: list[str] = []
 
     try:
         response = llm.invoke(messages)
@@ -311,7 +354,6 @@ def answer_with_tools(
             if not tool_calls:
                 break
 
-            round_outputs = []
             for call in tool_calls:
                 try:
                     selected_tool = TOOL_MAP[call["name"]]
@@ -320,12 +362,12 @@ def answer_with_tools(
                 except Exception as exc:
                     output = f"工具调用失败：{exc}"
 
-                round_outputs.append(output)
-                tool_output = "\n\n" + "\n\n".join(round_outputs)
+                tool_outputs.append(output)
                 messages.append(
                     ToolMessage(content=output, tool_call_id=call["id"])
                 )
 
+            tool_output = "\n\n" + "\n\n".join(tool_outputs)
             response = llm.invoke(messages)
             messages.append(response)
     except Exception:
@@ -334,6 +376,7 @@ def answer_with_tools(
     content = response.content
     if not isinstance(content, str):
         content = str(content)
+    content = apply_tool_result_next_step(content, tool_output)
     return content, source_docs, tool_output
 
 
