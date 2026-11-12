@@ -5,10 +5,14 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+from dotenv import load_dotenv
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
 
 from rag_core import answer_question, create_llm, initialize_rag_components
+
+# 自动加载项目根目录 .env 里的 DEEPSEEK_API_KEY，无需每次手动 export
+load_dotenv(Path(__file__).resolve().parent / ".env")
 
 
 BASE_DIR = Path(__file__).resolve().parent
