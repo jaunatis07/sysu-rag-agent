@@ -1,8 +1,9 @@
 import json
 import os
 import re
+import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -13,7 +14,10 @@ from rag_core import answer_question, create_llm, initialize_rag_components
 BASE_DIR = Path(__file__).resolve().parent
 DATASET_PATH = BASE_DIR / "eval_dataset_v2.json"
 RESULTS_PATH = BASE_DIR / "eval_results_v2.json"
+CHECKPOINT_PATH = BASE_DIR / "eval_checkpoint.json"  # 断点续跑：每判完一条立即落盘
 PASS_THRESHOLD = 0.8
+MAX_RETRIES = 3          # API 瞬时故障（限流/超时）自动重试次数
+RETRY_WAIT_SECONDS = 10  # 重试等待基数，按次数递增
 
 JUDGE_PROMPT = ChatPromptTemplate.from_messages(
     [
@@ -58,6 +62,32 @@ def load_dataset() -> list[dict[str, Any]]:
     return dataset
 
 
+def invoke_with_retry(call: Callable[[], Any], label: str) -> Any:
+    """API 瞬时故障重试：最多 MAX_RETRIES 次，等待时间按次数递增。"""
+    last_exc: Exception | None = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return call()
+        except Exception as exc:  # noqa: BLE001 网络层异常类型较多，统一兜住重试
+            last_exc = exc
+            wait = RETRY_WAIT_SECONDS * attempt
+            print(f"\n[{label}] 第 {attempt}/{MAX_RETRIES} 次调用失败（{type(exc).__name__}），{wait} 秒后重试…")
+            time.sleep(wait)
+    raise RuntimeError(f"[{label}] 重试 {MAX_RETRIES} 次仍失败") from last_exc
+
+
+def get_answer(question: str, bm25_retriever, rag_llm) -> str:
+    """生成回答。生成层异常会内部降级为本地兜底文案，视为本次调用失败并重试。"""
+
+    def call() -> str:
+        answer, _, _ = answer_question(question, bm25_retriever, rag_llm)
+        if answer.startswith("当前无法使用 DeepSeek"):
+            raise RuntimeError("生成降级（API 异常）")
+        return answer
+
+    return invoke_with_retry(call, f"回答 id={question[:12]}…")
+
+
 def judge_answer(
     judge: ChatOpenAI,
     question: str,
@@ -65,14 +95,17 @@ def judge_answer(
     ground_truth: str,
     answer: str,
 ) -> str:
-    response = judge.invoke(
-        JUDGE_PROMPT.format(
-            question=question,
-            expected_source=expected_source or "未指定",
-            ground_truth=ground_truth,
-            answer=answer,
-        )
-    ).content
+    response = invoke_with_retry(
+        lambda: judge.invoke(
+            JUDGE_PROMPT.format(
+                question=question,
+                expected_source=expected_source or "未指定",
+                ground_truth=ground_truth,
+                answer=answer,
+            )
+        ).content,
+        f"判卷 id={question[:12]}…",
+    )
     if not isinstance(response, str):
         response = str(response)
 
@@ -96,15 +129,21 @@ def main() -> None:
         temperature=0,
     )
 
+    # 断点续跑：读取已有进度，跳过已判定的题目
+    done: dict[str, dict[str, Any]] = {}
+    if CHECKPOINT_PATH.exists():
+        done = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
+        print(f"检测到断点文件，已完成 {len(done)} 条，自动跳过。")
+
     results = []
-    passed = 0
     for index, item in enumerate(dataset, start=1):
+        key = str(item.get("id", index))
+        if key in done:
+            results.append(done[key])
+            continue
+
         question = item["question"].strip()
-        answer, _, _ = answer_question(
-            question,
-            bm25_retriever,
-            rag_llm,
-        )
+        answer = get_answer(question, bm25_retriever, rag_llm)
         verdict = judge_answer(
             judge,
             question,
@@ -112,19 +151,24 @@ def main() -> None:
             item["ground_truth"].strip(),
             answer,
         )
-        passed += verdict == "PASS"
-        results.append(
-            {
-                "id": item.get("id", index),
-                "question": question,
-                "expected_source": item.get("expected_source", ""),
-                "ground_truth": item["ground_truth"].strip(),
-                "answer": answer,
-                "verdict": verdict,
-            }
+        record = {
+            "id": item.get("id", index),
+            "question": question,
+            "expected_source": item.get("expected_source", ""),
+            "ground_truth": item["ground_truth"].strip(),
+            "answer": answer,
+            "verdict": verdict,
+        }
+        results.append(record)
+
+        # 每判完一条立即落盘，中途崩溃也不丢进度
+        done[key] = record
+        CHECKPOINT_PATH.write_text(
+            json.dumps(done, ensure_ascii=False), encoding="utf-8"
         )
         print(f"[{index}/{len(dataset)}] {verdict}: {question}")
 
+    passed = sum(result["verdict"] == "PASS" for result in results)
     core_results = results[:50]
     tail_results = results[50:130]
     core_passed = sum(result["verdict"] == "PASS" for result in core_results)
@@ -146,6 +190,7 @@ def main() -> None:
         json.dumps(report, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    CHECKPOINT_PATH.unlink(missing_ok=True)  # 全量跑完后清除断点文件
 
     print(f"\n准确率：{passed}/{len(dataset)} = {accuracy:.1%}")
     print(f"前 50 条（原有核心文件）准确率：{core_passed}/{len(core_results)} = {core_accuracy:.1%}")
